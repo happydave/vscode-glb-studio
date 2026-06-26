@@ -1,23 +1,33 @@
 import * as vscode from "vscode";
+import { Document } from "@gltf-transform/core";
 import { HostToWebview, PROTOCOL_VERSION, WebviewToHost } from "./protocol";
 import { resolveManifest } from "./manifestResolver";
 import { validateGlb } from "./validation";
+import { readDocument, writeDocument } from "./glbModel";
 
-/** Minimal read-only custom document: just the file URI. */
+/**
+ * Custom document holding the file URI and the authoritative gltf-transform model.
+ * `model` is null when the glb could not be parsed into an editable document (the
+ * file can still be viewed; saving is unavailable).
+ */
 class GlbDocument implements vscode.CustomDocument {
-  constructor(public readonly uri: vscode.Uri) {}
+  constructor(
+    public readonly uri: vscode.Uri,
+    public model: Document | null
+  ) {}
   dispose(): void {
-    // No held resources; bytes live in the webview.
+    // gltf-transform documents hold no OS resources.
   }
 }
 
 /**
- * Read-only custom editor for `*.glb`. The host serves the file to the webview
- * as a webview-scoped resource URI; the webview fetches and renders it with
- * three.js. M1 is read-only — the file is never modified.
+ * Editor for `*.glb`. The host owns the authoritative gltf-transform document; the
+ * webview renders the file and (from M4b) emits edit intents. M4a establishes the
+ * editor spine — document, dirty-state plumbing, and a valid save/re-export — with
+ * no interactive editing yet.
  */
 export class GlbEditorProvider
-  implements vscode.CustomReadonlyEditorProvider<GlbDocument>
+  implements vscode.CustomEditorProvider<GlbDocument>
 {
   public static readonly viewType = "glbStudio.viewer";
 
@@ -42,9 +52,92 @@ export class GlbEditorProvider
     private readonly diagnostics: vscode.DiagnosticCollection
   ) {}
 
-  openCustomDocument(uri: vscode.Uri): GlbDocument {
-    return new GlbDocument(uri);
+  // VS Code tracks dirty-state and routes save/undo off this event. No edits emit
+  // it in M4a; M4b fires it for real edits.
+  private readonly _onDidChange =
+    new vscode.EventEmitter<vscode.CustomDocumentEditEvent<GlbDocument>>();
+  public readonly onDidChangeCustomDocument = this._onDidChange.event;
+
+  // --- Document lifecycle ------------------------------------------------------
+
+  async openCustomDocument(
+    uri: vscode.Uri,
+    _openContext: vscode.CustomDocumentOpenContext,
+    _token: vscode.CancellationToken
+  ): Promise<GlbDocument> {
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    try {
+      const model = await readDocument(bytes);
+      return new GlbDocument(uri, model);
+    } catch (e) {
+      this.log.error(
+        `Could not parse ${uri.fsPath} into an editable document (view-only): ${
+          e instanceof Error ? e.message : String(e)
+        }`
+      );
+      return new GlbDocument(uri, null);
+    }
   }
+
+  private async bytesFor(document: GlbDocument): Promise<Uint8Array> {
+    if (document.model) return writeDocument(document.model);
+    // Unparsed model: preserve the original bytes verbatim.
+    return vscode.workspace.fs.readFile(document.uri);
+  }
+
+  async saveCustomDocument(
+    document: GlbDocument,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    await this.writeTo(document, document.uri);
+  }
+
+  async saveCustomDocumentAs(
+    document: GlbDocument,
+    destination: vscode.Uri,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    await this.writeTo(document, destination);
+  }
+
+  private async writeTo(
+    document: GlbDocument,
+    target: vscode.Uri
+  ): Promise<void> {
+    const bytes = await this.bytesFor(document);
+    await vscode.workspace.fs.writeFile(target, bytes);
+    this.log.info(`Saved ${target.fsPath} (${bytes.byteLength} bytes)`);
+  }
+
+  async revertCustomDocument(
+    document: GlbDocument,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    const bytes = await vscode.workspace.fs.readFile(document.uri);
+    document.model = await readDocument(bytes);
+    this.log.info(`Reverted ${document.uri.fsPath}`);
+  }
+
+  async backupCustomDocument(
+    document: GlbDocument,
+    context: vscode.CustomDocumentBackupContext,
+    _token: vscode.CancellationToken
+  ): Promise<vscode.CustomDocumentBackup> {
+    const target = context.destination;
+    await this.writeTo(document, target);
+    return {
+      id: target.toString(),
+      delete: async () => {
+        try {
+          await vscode.workspace.fs.delete(target);
+        } catch {
+          // Backup already gone; nothing to clean up.
+        }
+      },
+    };
+  }
+
+  // --- Webview -----------------------------------------------------------------
 
   async resolveCustomEditor(
     document: GlbDocument,
@@ -172,15 +265,14 @@ export class GlbEditorProvider
       background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
       padding: 2px 6px; border-radius: 3px; cursor: pointer;
     }
-    [hidden] { display: none !important; }
-    #info .h { opacity: 0.7; }
     #error {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; text-align: center; padding: 24px;
       font: 13px var(--vscode-editor-font-family, sans-serif);
       color: var(--vscode-errorForeground, #f48771);
     }
-    #error[hidden] { display: none; }
+    [hidden] { display: none !important; }
+    #info .h { opacity: 0.7; }
   </style>
 </head>
 <body>

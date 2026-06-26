@@ -5,9 +5,11 @@ import { TransformControls } from "three/examples/jsm/controls/TransformControls
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import {
   DEFAULT_CELL_SIZE_METRES,
+  ExtrasEdit,
   GlbStats,
   HostToWebview,
   ManifestEnrichment,
+  MaterialEdit,
   PROTOCOL_VERSION,
   TransformEdit,
   WebviewToHost,
@@ -26,6 +28,14 @@ const animEl = document.getElementById("anim") as HTMLDivElement;
 const clipSel = document.getElementById("clip") as HTMLSelectElement;
 const playPauseBtn = document.getElementById("playpause") as HTMLButtonElement;
 const gizmoEl = document.getElementById("gizmo") as HTMLDivElement;
+const inspectorEl = document.getElementById("inspector") as HTMLDivElement;
+const matCtlEl = document.getElementById("matctl") as HTMLDivElement;
+const matColor = document.getElementById("matColor") as HTMLInputElement;
+const matMetal = document.getElementById("matMetal") as HTMLInputElement;
+const matRough = document.getElementById("matRough") as HTMLInputElement;
+const extrasEl = document.getElementById("extras") as HTMLTextAreaElement;
+const extrasApply = document.getElementById("extrasApply") as HTMLButtonElement;
+const extrasErr = document.getElementById("extrasErr") as HTMLSpanElement;
 
 // --- Renderer / scene / camera -------------------------------------------------
 
@@ -99,6 +109,7 @@ let selectedRow: HTMLElement | null = null;
 const nodeByIndex = new Map<number, THREE.Object3D>();
 const indexByObject = new Map<THREE.Object3D, number>();
 let selectedObject: THREE.Object3D | null = null;
+let selectedMaterial: THREE.MeshStandardMaterial | null = null;
 
 /** Rebuild the ground grid so each cell is `cellSizeMetres` across the model span. */
 function rebuildGrid(): void {
@@ -327,10 +338,22 @@ function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
   if (idx !== undefined) {
     gizmo.attach(obj);
     gizmoEl.hidden = false;
+    inspectorEl.hidden = false;
+    selectedMaterial = findMaterial(obj);
+    if (selectedMaterial) {
+      matCtlEl.hidden = false;
+      populateMaterialControls(selectedMaterial);
+    } else {
+      matCtlEl.hidden = true;
+    }
+    extrasEl.value = JSON.stringify(obj.userData ?? {}, null, 2);
+    extrasErr.textContent = "";
   } else {
     // Not a glTF node (e.g. the Scene root) — selectable/highlightable, not editable.
     gizmo.detach();
     gizmoEl.hidden = true;
+    inspectorEl.hidden = true;
+    selectedMaterial = null;
   }
 }
 
@@ -401,7 +424,9 @@ async function populateNodeMaps(gltf: GLTF): Promise<void> {
 function resetGizmo(): void {
   gizmo.detach();
   selectedObject = null;
+  selectedMaterial = null;
   gizmoEl.hidden = true;
+  inspectorEl.hidden = true;
   nodeByIndex.clear();
   indexByObject.clear();
 }
@@ -459,6 +484,113 @@ gizmo.setMode("translate");
   gizmoEl.querySelector('[data-mode="translate"]') as HTMLElement | null
 )?.classList.add("active");
 
+// --- Inspector: material + extras ----------------------------------------------
+
+function findMaterial(obj: THREE.Object3D): THREE.MeshStandardMaterial | null {
+  let found: THREE.MeshStandardMaterial | null = null;
+  obj.traverse((o) => {
+    if (found) return;
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh && mesh.material) {
+      const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      if ((mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) {
+        found = mat as THREE.MeshStandardMaterial;
+      }
+    }
+  });
+  return found;
+}
+
+function populateMaterialControls(mat: THREE.MeshStandardMaterial): void {
+  matColor.value = "#" + mat.color.getHexString(THREE.SRGBColorSpace);
+  matMetal.value = String(mat.metalness);
+  matRough.value = String(mat.roughness);
+}
+
+/** Live preview during input — updates the three material only (no commit). */
+function previewMaterial(): void {
+  if (!selectedMaterial) return;
+  selectedMaterial.color.setHex(
+    parseInt(matColor.value.slice(1), 16),
+    THREE.SRGBColorSpace
+  );
+  selectedMaterial.metalness = Number(matMetal.value);
+  selectedMaterial.roughness = Number(matRough.value);
+}
+
+/** Commit on change — sends the intent to the host. */
+function commitMaterial(): void {
+  if (!selectedObject || !selectedMaterial) return;
+  const idx = indexByObject.get(selectedObject);
+  if (idx === undefined) return;
+  const c = new THREE.Color().setHex(
+    parseInt(matColor.value.slice(1), 16),
+    THREE.SRGBColorSpace
+  );
+  send({
+    type: "editMaterial",
+    edit: {
+      nodeIndex: idx,
+      baseColorFactor: [c.r, c.g, c.b, 1],
+      metallic: Number(matMetal.value),
+      roughness: Number(matRough.value),
+    },
+  });
+}
+
+for (const el of [matColor, matMetal, matRough]) {
+  el.addEventListener("input", previewMaterial);
+  el.addEventListener("change", commitMaterial);
+}
+
+extrasApply.addEventListener("click", () => {
+  if (!selectedObject) return;
+  const idx = indexByObject.get(selectedObject);
+  if (idx === undefined) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extrasEl.value || "{}");
+  } catch {
+    extrasErr.textContent = "invalid JSON";
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    extrasErr.textContent = "must be an object";
+    return;
+  }
+  extrasErr.textContent = "";
+  const extras = parsed as Record<string, unknown>;
+  selectedObject.userData = extras;
+  send({ type: "editExtras", edit: { nodeIndex: idx, extras } });
+});
+
+/** Apply an authoritative material from the host (undo/redo). */
+function applyMaterial(edit: MaterialEdit): void {
+  const obj = nodeByIndex.get(edit.nodeIndex);
+  if (!obj) return;
+  const mat = findMaterial(obj);
+  if (!mat) return;
+  mat.color.setRGB(
+    edit.baseColorFactor[0],
+    edit.baseColorFactor[1],
+    edit.baseColorFactor[2]
+  );
+  mat.metalness = edit.metallic;
+  mat.roughness = edit.roughness;
+  if (obj === selectedObject) populateMaterialControls(mat);
+}
+
+/** Apply authoritative extras from the host (undo/redo). */
+function applyExtras(edit: ExtrasEdit): void {
+  const obj = nodeByIndex.get(edit.nodeIndex);
+  if (!obj) return;
+  obj.userData = edit.extras;
+  if (obj === selectedObject) {
+    extrasEl.value = JSON.stringify(edit.extras, null, 2);
+    extrasErr.textContent = "";
+  }
+}
+
 // --- Host channel --------------------------------------------------------------
 
 window.addEventListener("message", (e: MessageEvent<HostToWebview>) => {
@@ -471,6 +603,10 @@ window.addEventListener("message", (e: MessageEvent<HostToWebview>) => {
     renderInfo(msg.enrichment);
   } else if (msg.type === "applyTransform") {
     applyTransform(msg.edit);
+  } else if (msg.type === "applyMaterial") {
+    applyMaterial(msg.edit);
+  } else if (msg.type === "applyExtras") {
+    applyExtras(msg.edit);
   }
 });
 

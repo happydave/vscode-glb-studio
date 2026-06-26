@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
-import { Document, Node } from "@gltf-transform/core";
+import { Document, Material, Node } from "@gltf-transform/core";
 import {
+  ExtrasEdit,
   HostToWebview,
+  MaterialEdit,
   PROTOCOL_VERSION,
   TransformEdit,
   WebviewToHost,
@@ -215,6 +217,12 @@ export class GlbEditorProvider
         case "edit":
           this.handleEdit(document, msg.edit);
           break;
+        case "editMaterial":
+          this.handleMaterialEdit(document, msg.edit);
+          break;
+        case "editExtras":
+          this.handleExtrasEdit(document, msg.edit);
+          break;
       }
     });
 
@@ -272,6 +280,97 @@ export class GlbEditorProvider
   private echo(document: GlbDocument, edit: TransformEdit): void {
     if (document.panel) {
       this.post(document.panel, { type: "applyTransform", edit });
+    }
+  }
+
+  /** Apply a committed material edit to the selected node's material. */
+  private handleMaterialEdit(document: GlbDocument, edit: MaterialEdit): void {
+    if (!document.model) {
+      this.log.warn("Material edit ignored: glb is view-only");
+      return;
+    }
+    const node = document.model.getRoot().listNodes()[edit.nodeIndex];
+    const mat = node?.getMesh()?.listPrimitives()[0]?.getMaterial();
+    if (!mat) {
+      this.log.warn(
+        `Material edit ignored: node ${edit.nodeIndex} has no material`
+      );
+      return;
+    }
+    const before: MaterialEdit = {
+      nodeIndex: edit.nodeIndex,
+      baseColorFactor: [...mat.getBaseColorFactor()] as [
+        number,
+        number,
+        number,
+        number,
+      ],
+      metallic: mat.getMetallicFactor(),
+      roughness: mat.getRoughnessFactor(),
+    };
+    this.setMaterial(mat, edit);
+    this.log.info(`Edit: node ${edit.nodeIndex} material`);
+    this._onDidChange.fire({
+      document,
+      label: "Edit material",
+      undo: () => {
+        this.setMaterial(mat, before);
+        this.echoMaterial(document, before);
+      },
+      redo: () => {
+        this.setMaterial(mat, edit);
+        this.echoMaterial(document, edit);
+      },
+    });
+  }
+
+  private setMaterial(mat: Material, edit: MaterialEdit): void {
+    mat
+      .setBaseColorFactor(edit.baseColorFactor)
+      .setMetallicFactor(edit.metallic)
+      .setRoughnessFactor(edit.roughness);
+  }
+
+  private echoMaterial(document: GlbDocument, edit: MaterialEdit): void {
+    if (document.panel) {
+      this.post(document.panel, { type: "applyMaterial", edit });
+    }
+  }
+
+  /** Apply a committed extras edit to the selected node. */
+  private handleExtrasEdit(document: GlbDocument, edit: ExtrasEdit): void {
+    if (!document.model) {
+      this.log.warn("Extras edit ignored: glb is view-only");
+      return;
+    }
+    const node = document.model.getRoot().listNodes()[edit.nodeIndex];
+    if (!node) {
+      this.log.warn(`Extras edit ignored: no node at index ${edit.nodeIndex}`);
+      return;
+    }
+    const before: ExtrasEdit = {
+      nodeIndex: edit.nodeIndex,
+      extras: { ...(node.getExtras() as Record<string, unknown>) },
+    };
+    node.setExtras(edit.extras);
+    this.log.info(`Edit: node ${edit.nodeIndex} extras`);
+    this._onDidChange.fire({
+      document,
+      label: "Edit extras",
+      undo: () => {
+        node.setExtras(before.extras);
+        this.echoExtras(document, before);
+      },
+      redo: () => {
+        node.setExtras(edit.extras);
+        this.echoExtras(document, edit);
+      },
+    });
+  }
+
+  private echoExtras(document: GlbDocument, edit: ExtrasEdit): void {
+    if (document.panel) {
+      this.post(document.panel, { type: "applyExtras", edit });
     }
   }
 
@@ -345,6 +444,28 @@ export class GlbEditorProvider
       padding: 2px 8px; border-radius: 3px; cursor: pointer;
     }
     #gizmo button.active { background: var(--vscode-button-background, #0e639c); }
+    #inspector {
+      position: absolute; right: 8px; bottom: 8px; width: 248px;
+      font: 12px var(--vscode-editor-font-family, monospace); color: var(--vscode-foreground);
+      background: rgba(0,0,0,0.5); padding: 8px; border-radius: 4px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    #inspector label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    #inspector input[type="range"] { flex: 1; }
+    #inspector textarea {
+      width: 100%; box-sizing: border-box; font: inherit; resize: vertical;
+      background: var(--vscode-input-background, #1e1e1e);
+      color: var(--vscode-input-foreground, #ccc);
+      border: 1px solid var(--vscode-input-border, #3c3c3c); border-radius: 3px;
+    }
+    #inspector button {
+      font: inherit; color: var(--vscode-foreground);
+      background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
+      padding: 2px 8px; border-radius: 3px; cursor: pointer;
+    }
+    #exrow { display: flex; gap: 8px; align-items: center; }
+    #extrasErr { color: var(--vscode-errorForeground, #f48771); }
+    .exlabel { opacity: 0.7; }
     #error {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; text-align: center; padding: 24px;
@@ -368,6 +489,19 @@ export class GlbEditorProvider
     <button data-mode="translate">Move</button>
     <button data-mode="rotate">Rotate</button>
     <button data-mode="scale">Scale</button>
+  </div>
+  <div id="inspector" hidden>
+    <div id="matctl" hidden>
+      <label>color <input type="color" id="matColor" /></label>
+      <label>metal <input type="range" id="matMetal" min="0" max="1" step="0.01" /></label>
+      <label>rough <input type="range" id="matRough" min="0" max="1" step="0.01" /></label>
+    </div>
+    <span class="exlabel">extras (JSON)</span>
+    <textarea id="extras" rows="4" spellcheck="false"></textarea>
+    <div id="exrow">
+      <button id="extrasApply">Apply extras</button>
+      <span id="extrasErr"></span>
+    </div>
   </div>
   <div id="error" hidden></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

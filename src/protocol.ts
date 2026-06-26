@@ -49,6 +49,20 @@ export interface TransformEdit {
   scale: [number, number, number];
 }
 
+/** Material edit for the selected node's material (base colour is linear RGBA). */
+export interface MaterialEdit {
+  nodeIndex: number;
+  baseColorFactor: [number, number, number, number];
+  metallic: number;
+  roughness: number;
+}
+
+/** Replace the selected node's `extras` object. */
+export interface ExtrasEdit {
+  nodeIndex: number;
+  extras: Record<string, unknown>;
+}
+
 /** Messages sent host -> webview. */
 export type HostToWebview =
   | {
@@ -66,11 +80,15 @@ export type HostToWebview =
       // Authoritative transform to apply to the rendered node (undo/redo).
       type: "applyTransform";
       edit: TransformEdit;
-    };
+    }
+  | { type: "applyMaterial"; edit: MaterialEdit }
+  | { type: "applyExtras"; edit: ExtrasEdit };
 
 /** Messages sent webview -> host. */
 export type WebviewToHost =
   | { type: "ready"; version: number }
   | { type: "loaded"; stats: GlbStats }
   | { type: "error"; message: string }
-  | { type: "edit"; edit: TransformEdit };
+  | { type: "edit"; edit: TransformEdit }
+  | { type: "editMaterial"; edit: MaterialEdit }
+  | { type: "editExtras"; edit: ExtrasEdit };

@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { GLTF, GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import {
   DEFAULT_CELL_SIZE_METRES,
@@ -8,6 +9,7 @@ import {
   HostToWebview,
   ManifestEnrichment,
   PROTOCOL_VERSION,
+  TransformEdit,
   WebviewToHost,
 } from "../protocol";
 
@@ -23,6 +25,7 @@ const treeEl = document.getElementById("tree") as HTMLDivElement;
 const animEl = document.getElementById("anim") as HTMLDivElement;
 const clipSel = document.getElementById("clip") as HTMLSelectElement;
 const playPauseBtn = document.getElementById("playpause") as HTMLButtonElement;
+const gizmoEl = document.getElementById("gizmo") as HTMLDivElement;
 
 // --- Renderer / scene / camera -------------------------------------------------
 
@@ -52,6 +55,20 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 
+// Transform gizmo for editing the selected node (M4b). Dragging is an ephemeral
+// local preview; a single committed intent is sent to the host on gesture end.
+const gizmo = new TransformControls(camera, renderer.domElement);
+type WithHelper = { getHelper?: () => THREE.Object3D };
+const gizmoHelper = (gizmo as unknown as WithHelper).getHelper
+  ? (gizmo as unknown as Required<WithHelper>).getHelper()
+  : (gizmo as unknown as THREE.Object3D);
+scene.add(gizmoHelper);
+gizmo.addEventListener("dragging-changed", (e) => {
+  const dragging = (e as unknown as { value: boolean }).value;
+  controls.enabled = !dragging; // orbit off while dragging the gizmo
+  if (!dragging) commitTransform();
+});
+
 // Mount overlay (always on): origin pivot marker + R/G/B axis triad + metre grid.
 // By the mechanical-kit convention the geometry origin is the mount pivot, so the
 // marker sits at (0,0,0), not the model centre.
@@ -77,6 +94,11 @@ let action: THREE.AnimationAction | null = null;
 let clips: THREE.AnimationClip[] = [];
 let highlight: THREE.BoxHelper | null = null;
 let selectedRow: HTMLElement | null = null;
+
+// glTF node-index <-> three object mapping (shared identity with the host).
+const nodeByIndex = new Map<number, THREE.Object3D>();
+const indexByObject = new Map<THREE.Object3D, number>();
+let selectedObject: THREE.Object3D | null = null;
 
 /** Rebuild the ground grid so each cell is `cellSizeMetres` across the model span. */
 function rebuildGrid(): void {
@@ -125,6 +147,8 @@ function loadGlb(url: string): void {
       frameObject(currentModel);
       renderStats(stats);
       clearHighlight();
+      resetGizmo();
+      void populateNodeMaps(gltf);
       buildTree(currentModel);
       setupAnimations(gltf.animations ?? []);
       send({ type: "loaded", stats });
@@ -297,6 +321,17 @@ function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
   clearHighlight(true);
   highlight = new THREE.BoxHelper(obj, 0xffcc00);
   scene.add(highlight);
+
+  selectedObject = obj;
+  const idx = indexByObject.get(obj);
+  if (idx !== undefined) {
+    gizmo.attach(obj);
+    gizmoEl.hidden = false;
+  } else {
+    // Not a glTF node (e.g. the Scene root) — selectable/highlightable, not editable.
+    gizmo.detach();
+    gizmoEl.hidden = true;
+  }
 }
 
 function clearHighlight(keepRow = false): void {
@@ -350,6 +385,80 @@ playPauseBtn.addEventListener("click", () => {
   playPauseBtn.textContent = action.paused ? "Play" : "Pause";
 });
 
+// --- Editing (transform gizmo) -------------------------------------------------
+
+async function populateNodeMaps(gltf: GLTF): Promise<void> {
+  nodeByIndex.clear();
+  indexByObject.clear();
+  const nodes = (gltf.parser.json.nodes ?? []) as unknown[];
+  for (let i = 0; i < nodes.length; i++) {
+    const obj = (await gltf.parser.getDependency("node", i)) as THREE.Object3D;
+    nodeByIndex.set(i, obj);
+    indexByObject.set(obj, i);
+  }
+}
+
+function resetGizmo(): void {
+  gizmo.detach();
+  selectedObject = null;
+  gizmoEl.hidden = true;
+  nodeByIndex.clear();
+  indexByObject.clear();
+}
+
+/** On gesture end, send one committed transform intent for the selected node. */
+function commitTransform(): void {
+  if (!selectedObject) return;
+  const idx = indexByObject.get(selectedObject);
+  if (idx === undefined) return;
+  const p = selectedObject.position;
+  const q = selectedObject.quaternion;
+  const s = selectedObject.scale;
+  send({
+    type: "edit",
+    edit: {
+      nodeIndex: idx,
+      translation: [p.x, p.y, p.z],
+      rotation: [q.x, q.y, q.z, q.w],
+      scale: [s.x, s.y, s.z],
+    },
+  });
+}
+
+/** Apply an authoritative transform from the host (undo/redo). */
+function applyTransform(edit: TransformEdit): void {
+  const obj = nodeByIndex.get(edit.nodeIndex);
+  if (!obj) return;
+  obj.position.set(edit.translation[0], edit.translation[1], edit.translation[2]);
+  obj.quaternion.set(
+    edit.rotation[0],
+    edit.rotation[1],
+    edit.rotation[2],
+    edit.rotation[3]
+  );
+  obj.scale.set(edit.scale[0], edit.scale[1], edit.scale[2]);
+  obj.updateMatrixWorld(true);
+  if (highlight) highlight.update();
+}
+
+gizmoEl.querySelectorAll("button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const mode = (btn as HTMLButtonElement).dataset.mode as
+      | "translate"
+      | "rotate"
+      | "scale";
+    gizmo.setMode(mode);
+    gizmoEl
+      .querySelectorAll("button")
+      .forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+  });
+});
+gizmo.setMode("translate");
+(
+  gizmoEl.querySelector('[data-mode="translate"]') as HTMLElement | null
+)?.classList.add("active");
+
 // --- Host channel --------------------------------------------------------------
 
 window.addEventListener("message", (e: MessageEvent<HostToWebview>) => {
@@ -360,6 +469,8 @@ window.addEventListener("message", (e: MessageEvent<HostToWebview>) => {
     cellSizeMetres = msg.enrichment?.cellSize ?? DEFAULT_CELL_SIZE_METRES;
     rebuildGrid();
     renderInfo(msg.enrichment);
+  } else if (msg.type === "applyTransform") {
+    applyTransform(msg.edit);
   }
 });
 

@@ -38,6 +38,17 @@ export interface GlbStats {
   boundingBoxMetres: { x: number; y: number; z: number };
 }
 
+/**
+ * A node transform edit, identified by glTF node index. The same shape flows both
+ * ways: webview→host as a committed intent, host→webview as an undo/redo apply.
+ */
+export interface TransformEdit {
+  nodeIndex: number;
+  translation: [number, number, number];
+  rotation: [number, number, number, number];
+  scale: [number, number, number];
+}
+
 /** Messages sent host -> webview. */
 export type HostToWebview =
   | {
@@ -50,10 +61,16 @@ export type HostToWebview =
       type: "enrich";
       /** Manifest enrichment, or null when no manifest applies. */
       enrichment: ManifestEnrichment | null;
+    }
+  | {
+      // Authoritative transform to apply to the rendered node (undo/redo).
+      type: "applyTransform";
+      edit: TransformEdit;
     };
 
 /** Messages sent webview -> host. */
 export type WebviewToHost =
   | { type: "ready"; version: number }
   | { type: "loaded"; stats: GlbStats }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "edit"; edit: TransformEdit };

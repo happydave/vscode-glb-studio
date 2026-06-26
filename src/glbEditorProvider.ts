@@ -1,6 +1,11 @@
 import * as vscode from "vscode";
-import { Document } from "@gltf-transform/core";
-import { HostToWebview, PROTOCOL_VERSION, WebviewToHost } from "./protocol";
+import { Document, Node } from "@gltf-transform/core";
+import {
+  HostToWebview,
+  PROTOCOL_VERSION,
+  TransformEdit,
+  WebviewToHost,
+} from "./protocol";
 import { resolveManifest } from "./manifestResolver";
 import { validateGlb } from "./validation";
 import { readDocument, writeDocument } from "./glbModel";
@@ -11,6 +16,8 @@ import { readDocument, writeDocument } from "./glbModel";
  * file can still be viewed; saving is unavailable).
  */
 class GlbDocument implements vscode.CustomDocument {
+  /** The live editor panel, used to echo undo/redo back to the webview. */
+  public panel: vscode.WebviewPanel | null = null;
   constructor(
     public readonly uri: vscode.Uri,
     public model: Document | null
@@ -154,6 +161,11 @@ export class GlbEditorProvider
 
     const glbUri = panel.webview.asWebviewUri(document.uri).toString();
 
+    document.panel = panel;
+    panel.onDidDispose(() => {
+      if (document.panel === panel) document.panel = null;
+    });
+
     panel.webview.onDidReceiveMessage((msg: WebviewToHost) => {
       switch (msg.type) {
         case "ready":
@@ -200,10 +212,67 @@ export class GlbEditorProvider
             `Failed to render ${document.uri.fsPath}: ${msg.message}`
           );
           break;
+        case "edit":
+          this.handleEdit(document, msg.edit);
+          break;
       }
     });
 
     panel.webview.html = this.html(panel.webview);
+  }
+
+  // --- Editing -----------------------------------------------------------------
+
+  /** Apply a committed transform intent, recording it as an undoable change. */
+  private handleEdit(document: GlbDocument, edit: TransformEdit): void {
+    if (!document.model) {
+      this.log.warn("Edit ignored: glb is view-only (no editable model)");
+      return;
+    }
+    const node = document.model.getRoot().listNodes()[edit.nodeIndex];
+    if (!node) {
+      this.log.warn(`Edit ignored: no node at index ${edit.nodeIndex}`);
+      return;
+    }
+
+    const before: TransformEdit = {
+      nodeIndex: edit.nodeIndex,
+      translation: [...node.getTranslation()] as [number, number, number],
+      rotation: [...node.getRotation()] as [number, number, number, number],
+      scale: [...node.getScale()] as [number, number, number],
+    };
+
+    // The webview already shows the new transform (live gizmo); apply it to the
+    // authoritative model without echoing back.
+    this.setNode(node, edit);
+    this.log.info(`Edit: node ${edit.nodeIndex} transformed`);
+
+    this._onDidChange.fire({
+      document,
+      label: "Transform node",
+      undo: () => {
+        this.setNode(node, before);
+        this.echo(document, before);
+      },
+      redo: () => {
+        this.setNode(node, edit);
+        this.echo(document, edit);
+      },
+    });
+  }
+
+  private setNode(node: Node, edit: TransformEdit): void {
+    node
+      .setTranslation(edit.translation)
+      .setRotation(edit.rotation)
+      .setScale(edit.scale);
+  }
+
+  /** Push an authoritative transform to the webview (undo/redo only). */
+  private echo(document: GlbDocument, edit: TransformEdit): void {
+    if (document.panel) {
+      this.post(document.panel, { type: "applyTransform", edit });
+    }
   }
 
   private post(panel: vscode.WebviewPanel, msg: HostToWebview): void {
@@ -265,6 +334,17 @@ export class GlbEditorProvider
       background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
       padding: 2px 6px; border-radius: 3px; cursor: pointer;
     }
+    #gizmo {
+      position: absolute; left: 50%; top: 8px; transform: translateX(-50%);
+      display: flex; gap: 4px; font: 12px var(--vscode-editor-font-family, monospace);
+      background: rgba(0,0,0,0.45); padding: 4px 6px; border-radius: 4px;
+    }
+    #gizmo button {
+      font: inherit; color: var(--vscode-foreground);
+      background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
+      padding: 2px 8px; border-radius: 3px; cursor: pointer;
+    }
+    #gizmo button.active { background: var(--vscode-button-background, #0e639c); }
     #error {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; text-align: center; padding: 24px;
@@ -283,6 +363,11 @@ export class GlbEditorProvider
   <div id="anim" hidden>
     <select id="clip"></select>
     <button id="playpause">Pause</button>
+  </div>
+  <div id="gizmo" hidden>
+    <button data-mode="translate">Move</button>
+    <button data-mode="rotate">Rotate</button>
+    <button data-mode="scale">Scale</button>
   </div>
   <div id="error" hidden></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

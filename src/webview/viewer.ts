@@ -78,6 +78,7 @@ scene.add(gizmoHelper);
 gizmo.addEventListener("dragging-changed", (e) => {
   const dragging = (e as unknown as { value: boolean }).value;
   controls.enabled = !dragging; // orbit off while dragging the gizmo
+  if (dragging) gizmoDragged = true; // suppress the click-select on release
   if (!dragging) commitTransform();
 });
 
@@ -157,6 +158,9 @@ const nodeByIndex = new Map<number, THREE.Object3D>();
 const indexByObject = new Map<THREE.Object3D, number>();
 let selectedObject: THREE.Object3D | null = null;
 let selectedMaterial: THREE.MeshStandardMaterial | null = null;
+const rowByObject = new Map<THREE.Object3D, HTMLElement>();
+const raycaster = new THREE.Raycaster();
+let gizmoDragged = false;
 
 /** Rebuild the ground grid so each cell is `cellSizeMetres` across the model span. */
 function rebuildGrid(): void {
@@ -384,11 +388,63 @@ function buildTree(root: THREE.Object3D): void {
     row.textContent = `${"  ".repeat(depth)}${obj.name || obj.type}`;
     row.addEventListener("click", () => selectNode(obj, row));
     treeEl.appendChild(row);
+    rowByObject.set(obj, row);
     for (const child of obj.children) addRow(child, depth + 1);
   };
+  rowByObject.clear();
   addRow(root, 0);
   treeEl.hidden = false;
 }
+
+/** Clear the current selection (highlight, gizmo, inspector). */
+function deselect(): void {
+  clearHighlight();
+  gizmo.detach();
+  selectedObject = null;
+  selectedMaterial = null;
+  gizmoEl.hidden = true;
+  inspectorEl.hidden = true;
+}
+
+/** Raycast a viewport click into the model and select the picked node. */
+function pickAt(clientX: number, clientY: number): void {
+  if (!currentModel) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(ndc, camera);
+  const hits = raycaster.intersectObject(currentModel, true);
+  if (hits.length === 0) {
+    deselect();
+    return;
+  }
+  // Resolve the hit mesh to the nearest object that has a tree row (a selectable node).
+  let obj: THREE.Object3D | null = hits[0].object;
+  while (obj && !rowByObject.has(obj)) obj = obj.parent;
+  if (obj) {
+    const row = rowByObject.get(obj) as HTMLElement;
+    selectNode(obj, row);
+    row.scrollIntoView({ block: "nearest" });
+  }
+}
+
+let pickDownX = 0;
+let pickDownY = 0;
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  pickDownX = e.clientX;
+  pickDownY = e.clientY;
+});
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (e.button !== 0) return; // left-click only
+  if (gizmoDragged) {
+    gizmoDragged = false; // this release ended a gizmo drag — not a select
+    return;
+  }
+  if (Math.hypot(e.clientX - pickDownX, e.clientY - pickDownY) > 5) return; // orbit drag
+  pickAt(e.clientX, e.clientY);
+});
 
 function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
   if (selectedRow) selectedRow.classList.remove("sel");

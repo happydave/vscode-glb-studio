@@ -90,6 +90,51 @@ scene.add(pivot);
 const axes = new THREE.AxesHelper(0.5);
 scene.add(axes);
 
+// Mount indicator: an arrow pointing at the pivot from outside the asset, with a
+// "mount" label, so the mount point is findable even when the pivot sits inside the
+// geometry. Drawn depth-test-free so the mesh never hides it.
+const mountArrow = new THREE.ArrowHelper(
+  new THREE.Vector3(0, 1, 0),
+  new THREE.Vector3(),
+  1,
+  0xffcc00
+);
+(mountArrow.line.material as THREE.LineBasicMaterial).depthTest = false;
+(mountArrow.cone.material as THREE.MeshBasicMaterial).depthTest = false;
+mountArrow.renderOrder = 999;
+mountArrow.visible = false;
+scene.add(mountArrow);
+
+const mountLabel = makeTextSprite("mount");
+mountLabel.visible = false;
+scene.add(mountLabel);
+
+function makeTextSprite(text: string): THREE.Sprite {
+  const canvas = document.createElement("canvas");
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext("2d") as CanvasRenderingContext2D;
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.font = "44px sans-serif";
+  ctx.fillStyle = "#ffcc00";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: tex,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    })
+  );
+  sprite.renderOrder = 1000;
+  return sprite;
+}
+
 let grid = new THREE.GridHelper(2, 4, 0x888888, 0x333333);
 scene.add(grid);
 
@@ -268,6 +313,23 @@ function frameObject(obj: THREE.Object3D): void {
   axes.scale.setScalar(Math.max(radius * 2, 0.02));
   lastSpanMetres = Math.max(size.x, size.z, cellSizeMetres);
   rebuildGrid();
+
+  // Mount indicator: anchor outside the asset on the side the pivot lies (origin
+  // relative to centroid), pointing the arrow back at the pivot. Falls back to
+  // straight down when the pivot ~ the centroid (axially-symmetric parts).
+  const sphereR = Math.max(radius, 0.001);
+  const outward = new THREE.Vector3(0, 0, 0).sub(center);
+  if (outward.lengthSq() < 1e-8) outward.set(0, -1, 0);
+  outward.normalize();
+  const len = sphereR * 1.3; // tip lands on the pivot; anchor clears the bounds
+  mountArrow.position.copy(outward).multiplyScalar(len);
+  mountArrow.setDirection(outward.clone().multiplyScalar(-1));
+  mountArrow.setLength(len, len * 0.18, len * 0.1);
+  mountLabel.position.copy(outward).multiplyScalar(len * 1.14);
+  const labelW = sphereR * 0.9;
+  mountLabel.scale.set(labelW, labelW * 0.25, 1);
+  mountArrow.visible = true;
+  mountLabel.visible = true;
 }
 
 // --- UI ------------------------------------------------------------------------

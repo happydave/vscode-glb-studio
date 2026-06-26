@@ -1,0 +1,10 @@
+.git/**
+.gitignore
+node_modules/**
+src/**
+esbuild.mjs
+tsconfig.json
+Dockerfile.dev
+Makefile
+**/*.map
+docs/**

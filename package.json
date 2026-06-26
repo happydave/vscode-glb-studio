@@ -1,0 +1,63 @@
+{
+  "name": "glb-studio",
+  "displayName": "GLB Studio",
+  "description": "View glTF binary (.glb) files in an interactive 3D viewport.",
+  "version": "0.1.0",
+  "publisher": "soggynachos",
+  "license": "Unlicense",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "glb",
+    "gltf",
+    "3d",
+    "viewer",
+    "three.js"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "glbStudio.viewer",
+        "displayName": "GLB Studio",
+        "selector": [
+          {
+            "filenamePattern": "*.glb"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "glbStudio.openOutput",
+        "title": "GLB Studio: Open Output Channel",
+        "category": "GLB Studio"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run bundle",
+    "compile": "tsc --noEmit -p .",
+    "bundle": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "vsce package --no-dependencies",
+    "test": "echo \"No tests in M1\" && exit 0"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/three": "^0.169.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}

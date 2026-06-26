@@ -28,6 +28,7 @@ const animEl = document.getElementById("anim") as HTMLDivElement;
 const clipSel = document.getElementById("clip") as HTMLSelectElement;
 const playPauseBtn = document.getElementById("playpause") as HTMLButtonElement;
 const gizmoEl = document.getElementById("gizmo") as HTMLDivElement;
+const wireframeBtn = document.getElementById("wireframe") as HTMLButtonElement;
 const inspectorEl = document.getElementById("inspector") as HTMLDivElement;
 const matCtlEl = document.getElementById("matctl") as HTMLDivElement;
 const matColor = document.getElementById("matColor") as HTMLInputElement;
@@ -207,6 +208,7 @@ function loadGlb(url: string): void {
       void populateNodeMaps(gltf);
       buildTree(currentModel);
       setupAnimations(gltf.animations ?? []);
+      applyWireframe();
       send({ type: "loaded", stats });
     },
     undefined,
@@ -468,6 +470,26 @@ playPauseBtn.addEventListener("click", () => {
   if (!action) return;
   action.paused = !action.paused;
   playPauseBtn.textContent = action.paused ? "Play" : "Pause";
+});
+
+// --- Wireframe mode ------------------------------------------------------------
+
+let wireframe = false;
+
+function applyWireframe(): void {
+  if (!currentModel) return;
+  currentModel.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of mats) (m as THREE.MeshStandardMaterial).wireframe = wireframe;
+  });
+}
+
+wireframeBtn.addEventListener("click", () => {
+  wireframe = !wireframe;
+  wireframeBtn.classList.toggle("active", wireframe);
+  applyWireframe();
 });
 
 // --- Editing (transform gizmo) -------------------------------------------------

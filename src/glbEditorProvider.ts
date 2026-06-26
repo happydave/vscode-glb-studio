@@ -443,17 +443,22 @@ export class GlbEditorProvider
       background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
       padding: 2px 6px; border-radius: 3px; cursor: pointer;
     }
-    #gizmo {
+    #viewbar {
       position: absolute; left: 50%; top: 8px; transform: translateX(-50%);
       display: flex; gap: 4px; font: 12px var(--vscode-editor-font-family, monospace);
       background: rgba(0,0,0,0.45); padding: 4px 6px; border-radius: 4px;
     }
-    #gizmo button {
+    #gizmo {
+      position: absolute; left: 50%; top: 42px; transform: translateX(-50%);
+      display: flex; gap: 4px; font: 12px var(--vscode-editor-font-family, monospace);
+      background: rgba(0,0,0,0.45); padding: 4px 6px; border-radius: 4px;
+    }
+    #viewbar button, #gizmo button {
       font: inherit; color: var(--vscode-foreground);
       background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
       padding: 2px 8px; border-radius: 3px; cursor: pointer;
     }
-    #gizmo button.active { background: var(--vscode-button-background, #0e639c); }
+    #viewbar button.active, #gizmo button.active { background: var(--vscode-button-background, #0e639c); }
     #inspector {
       position: absolute; right: 8px; bottom: 8px; width: 248px;
       font: 12px var(--vscode-editor-font-family, monospace); color: var(--vscode-foreground);
@@ -488,6 +493,9 @@ export class GlbEditorProvider
 </head>
 <body>
   <div id="viewport"></div>
+  <div id="viewbar">
+    <button id="wireframe">Wireframe</button>
+  </div>
   <div id="tree" hidden></div>
   <div id="stats" hidden></div>
   <div id="info" hidden></div>

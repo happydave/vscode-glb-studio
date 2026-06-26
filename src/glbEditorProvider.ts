@@ -481,6 +481,10 @@ export class GlbEditorProvider
     #exrow { display: flex; gap: 8px; align-items: center; }
     #extrasErr { color: var(--vscode-errorForeground, #f48771); }
     .exlabel { opacity: 0.7; }
+    #matinfo {
+      white-space: pre-wrap; opacity: 0.85; border-bottom: 1px solid rgba(255,255,255,0.12);
+      padding-bottom: 6px;
+    }
     #error {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; text-align: center; padding: 24px;
@@ -509,6 +513,7 @@ export class GlbEditorProvider
     <button data-mode="scale">Scale</button>
   </div>
   <div id="inspector" hidden>
+    <div id="matinfo" hidden></div>
     <div id="matctl" hidden>
       <label>color <input type="color" id="matColor" /></label>
       <label>metal <input type="range" id="matMetal" min="0" max="1" step="0.01" /></label>

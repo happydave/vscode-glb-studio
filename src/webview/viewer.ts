@@ -37,6 +37,7 @@ const matRough = document.getElementById("matRough") as HTMLInputElement;
 const extrasEl = document.getElementById("extras") as HTMLTextAreaElement;
 const extrasApply = document.getElementById("extrasApply") as HTMLButtonElement;
 const extrasErr = document.getElementById("extrasErr") as HTMLSpanElement;
+const matInfoEl = document.getElementById("matinfo") as HTMLDivElement;
 
 // --- Renderer / scene / camera -------------------------------------------------
 
@@ -412,6 +413,7 @@ function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
     }
     extrasEl.value = JSON.stringify(obj.userData ?? {}, null, 2);
     extrasErr.textContent = "";
+    renderMaterialInfo(selectedMaterial);
   } else {
     // Not a glTF node (e.g. the Scene root) — selectable/highlightable, not editable.
     gizmo.detach();
@@ -419,6 +421,52 @@ function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
     inspectorEl.hidden = true;
     selectedMaterial = null;
   }
+}
+
+/** Read-only material readout for the selected node. */
+function renderMaterialInfo(mat: THREE.MeshStandardMaterial | null): void {
+  if (!mat) {
+    matInfoEl.textContent = "no material";
+    matInfoEl.hidden = false;
+    return;
+  }
+  const c = mat.color;
+  const hex = "#" + c.getHexString(THREE.SRGBColorSpace);
+  const lines = [
+    `material: ${mat.name || "(unnamed)"}`,
+    `base color: ${hex}  rgba(${c.r.toFixed(2)}, ${c.g.toFixed(2)}, ${c.b.toFixed(2)}, ${mat.opacity.toFixed(2)})`,
+    `metal: ${mat.metalness.toFixed(2)}   rough: ${mat.roughness.toFixed(2)}`,
+  ];
+  const seen = new Set<THREE.Texture>();
+  const maps: string[] = [];
+  const addMap = (label: string, tex: THREE.Texture | null | undefined): void => {
+    if (!tex || seen.has(tex)) return;
+    seen.add(tex);
+    const img = tex.image as { width?: number; height?: number } | undefined;
+    const dim = img && img.width && img.height ? ` ${img.width}×${img.height}` : "";
+    maps.push(`${label}${dim}`);
+  };
+  addMap("albedo", mat.map);
+  addMap("normal", mat.normalMap);
+  addMap("metallic-roughness", mat.metalnessMap ?? mat.roughnessMap);
+  addMap("emissive", mat.emissiveMap);
+  addMap("ao", mat.aoMap);
+  lines.push(`maps: ${maps.length ? maps.join(", ") : "none"}`);
+  const users = materialUserCount(mat);
+  if (users > 1) lines.push(`shared by ${users} nodes`);
+  matInfoEl.textContent = lines.join("\n");
+  matInfoEl.hidden = false;
+}
+
+function materialUserCount(mat: THREE.Material): number {
+  let n = 0;
+  currentModel?.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    if (mats.includes(mat)) n++;
+  });
+  return n;
 }
 
 function clearHighlight(keepRow = false): void {
@@ -600,6 +648,7 @@ function previewMaterial(): void {
   );
   selectedMaterial.metalness = Number(matMetal.value);
   selectedMaterial.roughness = Number(matRough.value);
+  renderMaterialInfo(selectedMaterial);
 }
 
 /** Commit on change — sends the intent to the host. */
@@ -661,7 +710,10 @@ function applyMaterial(edit: MaterialEdit): void {
   );
   mat.metalness = edit.metallic;
   mat.roughness = edit.roughness;
-  if (obj === selectedObject) populateMaterialControls(mat);
+  if (obj === selectedObject) {
+    populateMaterialControls(mat);
+    renderMaterialInfo(mat);
+  }
 }
 
 /** Apply authoritative extras from the host (undo/redo). */

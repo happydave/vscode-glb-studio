@@ -125,6 +125,16 @@ export class GlbEditorProvider
     const bytes = await vscode.workspace.fs.readFile(document.uri);
     document.model = await readDocument(bytes);
     this.log.info(`Reverted ${document.uri.fsPath}`);
+    // Re-render so the viewport matches the reverted (on-disk) document rather than
+    // the discarded in-memory edits.
+    if (document.panel) {
+      const glbUri = document.panel.webview.asWebviewUri(document.uri).toString();
+      this.post(document.panel, {
+        type: "load",
+        version: PROTOCOL_VERSION,
+        uri: glbUri,
+      });
+    }
   }
 
   async backupCustomDocument(

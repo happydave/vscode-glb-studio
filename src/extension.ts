@@ -7,7 +7,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(log);
   log.info("GLB Studio activated");
 
-  context.subscriptions.push(GlbEditorProvider.register(context, log));
+  const diagnostics = vscode.languages.createDiagnosticCollection("glb-studio");
+  context.subscriptions.push(diagnostics);
+
+  context.subscriptions.push(GlbEditorProvider.register(context, log, diagnostics));
 
   context.subscriptions.push(
     vscode.commands.registerCommand("glbStudio.openOutput", () => log.show())

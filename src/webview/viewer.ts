@@ -19,6 +19,10 @@ const viewport = document.getElementById("viewport") as HTMLDivElement;
 const statsEl = document.getElementById("stats") as HTMLDivElement;
 const infoEl = document.getElementById("info") as HTMLDivElement;
 const errorEl = document.getElementById("error") as HTMLDivElement;
+const treeEl = document.getElementById("tree") as HTMLDivElement;
+const animEl = document.getElementById("anim") as HTMLDivElement;
+const clipSel = document.getElementById("clip") as HTMLSelectElement;
+const playPauseBtn = document.getElementById("playpause") as HTMLButtonElement;
 
 // --- Renderer / scene / camera -------------------------------------------------
 
@@ -66,6 +70,14 @@ let cellSizeMetres = DEFAULT_CELL_SIZE_METRES;
 let lastSpanMetres = 1;
 let currentModel: THREE.Object3D | null = null;
 
+// Animation + selection state.
+const clock = new THREE.Clock();
+let mixer: THREE.AnimationMixer | null = null;
+let action: THREE.AnimationAction | null = null;
+let clips: THREE.AnimationClip[] = [];
+let highlight: THREE.BoxHelper | null = null;
+let selectedRow: HTMLElement | null = null;
+
 /** Rebuild the ground grid so each cell is `cellSizeMetres` across the model span. */
 function rebuildGrid(): void {
   const cells = Math.max(2, Math.ceil(lastSpanMetres / cellSizeMetres) + 2);
@@ -90,6 +102,9 @@ window.addEventListener("resize", resize);
 resize();
 
 function tick(): void {
+  const dt = clock.getDelta();
+  if (mixer) mixer.update(dt);
+  if (highlight) highlight.update();
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
@@ -109,6 +124,9 @@ function loadGlb(url: string): void {
       const stats = computeStats(currentModel);
       frameObject(currentModel);
       renderStats(stats);
+      clearHighlight();
+      buildTree(currentModel);
+      setupAnimations(gltf.animations ?? []);
       send({ type: "loaded", stats });
     },
     undefined,
@@ -255,6 +273,82 @@ function showError(message: string): void {
   errorEl.textContent = `Could not display this .glb:\n${message}`;
   errorEl.hidden = false;
 }
+
+// --- Scene tree + selection ----------------------------------------------------
+
+function buildTree(root: THREE.Object3D): void {
+  treeEl.textContent = "";
+  const addRow = (obj: THREE.Object3D, depth: number): void => {
+    const row = document.createElement("div");
+    row.className = "node";
+    row.textContent = `${"  ".repeat(depth)}${obj.name || obj.type}`;
+    row.addEventListener("click", () => selectNode(obj, row));
+    treeEl.appendChild(row);
+    for (const child of obj.children) addRow(child, depth + 1);
+  };
+  addRow(root, 0);
+  treeEl.hidden = false;
+}
+
+function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
+  if (selectedRow) selectedRow.classList.remove("sel");
+  selectedRow = row;
+  row.classList.add("sel");
+  clearHighlight(true);
+  highlight = new THREE.BoxHelper(obj, 0xffcc00);
+  scene.add(highlight);
+}
+
+function clearHighlight(keepRow = false): void {
+  if (highlight) {
+    scene.remove(highlight);
+    highlight.geometry.dispose();
+    (highlight.material as THREE.Material).dispose();
+    highlight = null;
+  }
+  if (!keepRow && selectedRow) {
+    selectedRow.classList.remove("sel");
+    selectedRow = null;
+  }
+}
+
+// --- Animation -----------------------------------------------------------------
+
+function setupAnimations(animations: THREE.AnimationClip[]): void {
+  if (mixer) mixer.stopAllAction();
+  mixer = null;
+  action = null;
+  clips = animations;
+  if (clips.length === 0 || !currentModel) {
+    animEl.hidden = true;
+    return;
+  }
+  mixer = new THREE.AnimationMixer(currentModel);
+  clipSel.textContent = "";
+  clips.forEach((c, idx) => {
+    const opt = document.createElement("option");
+    opt.value = String(idx);
+    opt.textContent = c.name || `clip ${idx}`;
+    clipSel.appendChild(opt);
+  });
+  playClip(0);
+  animEl.hidden = false;
+}
+
+function playClip(index: number): void {
+  if (!mixer || !clips[index]) return;
+  if (action) action.stop();
+  action = mixer.clipAction(clips[index]);
+  action.reset().play();
+  playPauseBtn.textContent = "Pause";
+}
+
+clipSel.addEventListener("change", () => playClip(Number(clipSel.value)));
+playPauseBtn.addEventListener("click", () => {
+  if (!action) return;
+  action.paused = !action.paused;
+  playPauseBtn.textContent = action.paused ? "Play" : "Pause";
+});
 
 // --- Host channel --------------------------------------------------------------
 

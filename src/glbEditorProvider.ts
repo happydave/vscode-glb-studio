@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { HostToWebview, PROTOCOL_VERSION, WebviewToHost } from "./protocol";
 import { resolveManifest } from "./manifestResolver";
+import { validateGlb } from "./validation";
 
 /** Minimal read-only custom document: just the file URI. */
 class GlbDocument implements vscode.CustomDocument {
@@ -22,11 +23,12 @@ export class GlbEditorProvider
 
   public static register(
     context: vscode.ExtensionContext,
-    log: vscode.LogOutputChannel
+    log: vscode.LogOutputChannel,
+    diagnostics: vscode.DiagnosticCollection
   ): vscode.Disposable {
     return vscode.window.registerCustomEditorProvider(
       GlbEditorProvider.viewType,
-      new GlbEditorProvider(context, log),
+      new GlbEditorProvider(context, log, diagnostics),
       {
         webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false,
@@ -36,7 +38,8 @@ export class GlbEditorProvider
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly log: vscode.LogOutputChannel
+    private readonly log: vscode.LogOutputChannel,
+    private readonly diagnostics: vscode.DiagnosticCollection
   ) {}
 
   openCustomDocument(uri: vscode.Uri): GlbDocument {
@@ -77,6 +80,17 @@ export class GlbEditorProvider
           // regardless of the outcome.
           void resolveManifest(document.uri, this.log).then((enrichment) =>
             this.post(panel, { type: "enrich", enrichment })
+          );
+          // Validate host-side and publish diagnostics; independent of rendering.
+          void vscode.workspace.fs.readFile(document.uri).then(
+            (bytes) =>
+              validateGlb(document.uri, bytes, this.diagnostics, this.log),
+            (e) =>
+              this.log.warn(
+                `Could not read ${document.uri.fsPath} for validation: ${
+                  e instanceof Error ? e.message : String(e)
+                }`
+              )
           );
           break;
         case "loaded": {
@@ -137,7 +151,28 @@ export class GlbEditorProvider
       color: var(--vscode-foreground); background: rgba(0,0,0,0.45);
       padding: 6px 9px; border-radius: 4px; white-space: pre-wrap; pointer-events: none;
     }
-    #info[hidden], #stats[hidden] { display: none; }
+    #tree {
+      position: absolute; left: 8px; top: 8px; max-width: 280px; max-height: 45%;
+      overflow: auto; font: 12px/1.4 var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-foreground); background: rgba(0,0,0,0.45);
+      padding: 6px 9px; border-radius: 4px;
+    }
+    #tree .node { cursor: pointer; white-space: nowrap; }
+    #tree .node:hover { color: var(--vscode-textLink-foreground, #4daafc); }
+    #tree .node.sel { color: var(--vscode-textLink-activeForeground, #4daafc); font-weight: bold; }
+    #anim {
+      position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%);
+      display: flex; gap: 6px; align-items: center;
+      font: 12px var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-foreground); background: rgba(0,0,0,0.45);
+      padding: 4px 8px; border-radius: 4px;
+    }
+    #anim select, #anim button {
+      font: inherit; color: var(--vscode-foreground);
+      background: var(--vscode-button-secondaryBackground, #3a3d41); border: none;
+      padding: 2px 6px; border-radius: 3px; cursor: pointer;
+    }
+    [hidden] { display: none !important; }
     #info .h { opacity: 0.7; }
     #error {
       position: absolute; inset: 0; display: flex; align-items: center;
@@ -150,8 +185,13 @@ export class GlbEditorProvider
 </head>
 <body>
   <div id="viewport"></div>
+  <div id="tree" hidden></div>
   <div id="stats" hidden></div>
   <div id="info" hidden></div>
+  <div id="anim" hidden>
+    <select id="clip"></select>
+    <button id="playpause">Pause</button>
+  </div>
   <div id="error" hidden></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

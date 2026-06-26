@@ -2,7 +2,7 @@
   "name": "glb-studio",
   "displayName": "GLB Studio",
   "description": "View glTF binary (.glb) files in an interactive 3D viewport.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "soggynachos",
   "license": "Unlicense",
   "engines": {
@@ -51,6 +51,7 @@
     "test": "echo \"No tests in M1\" && exit 0"
   },
   "dependencies": {
+    "gltf-validator": "2.0.0-dev.3.10",
     "three": "^0.169.0"
   },
   "devDependencies": {

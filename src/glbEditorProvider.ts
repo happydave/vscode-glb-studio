@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { HostToWebview, PROTOCOL_VERSION, WebviewToHost } from "./protocol";
+import { resolveManifest } from "./manifestResolver";
 
 /** Minimal read-only custom document: just the file URI. */
 class GlbDocument implements vscode.CustomDocument {
@@ -72,6 +73,11 @@ export class GlbEditorProvider
             version: PROTOCOL_VERSION,
             uri: glbUri,
           });
+          // Resolve the sidecar manifest in the background; the overlay renders
+          // regardless of the outcome.
+          void resolveManifest(document.uri, this.log).then((enrichment) =>
+            this.post(panel, { type: "enrich", enrichment })
+          );
           break;
         case "loaded": {
           const b = msg.stats.boundingBoxMetres;
@@ -125,6 +131,14 @@ export class GlbEditorProvider
       color: var(--vscode-foreground); background: rgba(0,0,0,0.45);
       padding: 6px 9px; border-radius: 4px; white-space: pre; pointer-events: none;
     }
+    #info {
+      position: absolute; right: 8px; top: 8px; max-width: 320px;
+      font: 12px/1.5 var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-foreground); background: rgba(0,0,0,0.45);
+      padding: 6px 9px; border-radius: 4px; white-space: pre-wrap; pointer-events: none;
+    }
+    #info[hidden], #stats[hidden] { display: none; }
+    #info .h { opacity: 0.7; }
     #error {
       position: absolute; inset: 0; display: flex; align-items: center;
       justify-content: center; text-align: center; padding: 24px;
@@ -137,6 +151,7 @@ export class GlbEditorProvider
 <body>
   <div id="viewport"></div>
   <div id="stats" hidden></div>
+  <div id="info" hidden></div>
   <div id="error" hidden></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

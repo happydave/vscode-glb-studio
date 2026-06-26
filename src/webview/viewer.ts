@@ -3,8 +3,10 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import {
+  DEFAULT_CELL_SIZE_METRES,
   GlbStats,
   HostToWebview,
+  ManifestEnrichment,
   PROTOCOL_VERSION,
   WebviewToHost,
 } from "../protocol";
@@ -15,6 +17,7 @@ const send = (msg: WebviewToHost): void => vscode.postMessage(msg);
 
 const viewport = document.getElementById("viewport") as HTMLDivElement;
 const statsEl = document.getElementById("stats") as HTMLDivElement;
+const infoEl = document.getElementById("info") as HTMLDivElement;
 const errorEl = document.getElementById("error") as HTMLDivElement;
 
 // --- Renderer / scene / camera -------------------------------------------------
@@ -45,13 +48,34 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 
-// Reference helpers (grid + axes) so scale/orientation read at a glance.
-const grid = new THREE.GridHelper(10, 20, 0x666666, 0x333333);
-scene.add(grid);
+// Mount overlay (always on): origin pivot marker + R/G/B axis triad + metre grid.
+// By the mechanical-kit convention the geometry origin is the mount pivot, so the
+// marker sits at (0,0,0), not the model centre.
+const pivot = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xffcc00 })
+);
+scene.add(pivot);
 const axes = new THREE.AxesHelper(0.5);
 scene.add(axes);
 
+let grid = new THREE.GridHelper(2, 4, 0x888888, 0x333333);
+scene.add(grid);
+
+let cellSizeMetres = DEFAULT_CELL_SIZE_METRES;
+let lastSpanMetres = 1;
 let currentModel: THREE.Object3D | null = null;
+
+/** Rebuild the ground grid so each cell is `cellSizeMetres` across the model span. */
+function rebuildGrid(): void {
+  const cells = Math.max(2, Math.ceil(lastSpanMetres / cellSizeMetres) + 2);
+  const size = cells * cellSizeMetres;
+  scene.remove(grid);
+  grid.geometry.dispose();
+  (grid.material as THREE.Material).dispose();
+  grid = new THREE.GridHelper(size, cells, 0x888888, 0x333333);
+  scene.add(grid);
+}
 
 // --- Resize / render loop ------------------------------------------------------
 
@@ -186,9 +210,11 @@ function frameObject(obj: THREE.Object3D): void {
   camera.updateProjectionMatrix();
   controls.update();
 
-  // Size grid/axes to the model so they stay a useful reference.
-  const span = Math.max(size.x, size.z, 0.5);
-  grid.scale.setScalar(span / 10);
+  // Size the overlay to the model so it stays a useful reference.
+  pivot.scale.setScalar(Math.max(radius * 0.03, 0.0005));
+  axes.scale.setScalar(Math.max(radius * 2, 0.02));
+  lastSpanMetres = Math.max(size.x, size.z, cellSizeMetres);
+  rebuildGrid();
 }
 
 // --- UI ------------------------------------------------------------------------
@@ -200,8 +226,29 @@ function renderStats(s: GlbStats): void {
     `tris: ${s.triangles.toLocaleString()}\n` +
     `materials: ${s.materials}\n` +
     `textures: ${s.textures} (${dims})\n` +
-    `bbox: ${b.x.toFixed(3)} x ${b.y.toFixed(3)} x ${b.z.toFixed(3)} m`;
+    `bbox: ${b.x.toFixed(3)} x ${b.y.toFixed(3)} x ${b.z.toFixed(3)} m\n` +
+    `axes: X red · Y green · Z blue`;
   statsEl.hidden = false;
+}
+
+function renderInfo(e: ManifestEnrichment | null): void {
+  if (!e) {
+    infoEl.hidden = true;
+    infoEl.textContent = "";
+    return;
+  }
+  const lines: string[] = [];
+  if (e.frame) lines.push(`frame: ${e.frame}`);
+  lines.push(`cell: ${e.cellSize} m`);
+  if (e.part) {
+    if (e.part.origin) lines.push(`origin: ${e.part.origin}`);
+    if (e.part.orientation) lines.push(`orientation: ${e.part.orientation}`);
+    if (e.part.materialSet) lines.push(`material: ${e.part.materialSet}`);
+  } else {
+    lines.push("(no manifest entry for this file)");
+  }
+  infoEl.textContent = lines.join("\n");
+  infoEl.hidden = false;
 }
 
 function showError(message: string): void {
@@ -213,7 +260,13 @@ function showError(message: string): void {
 
 window.addEventListener("message", (e: MessageEvent<HostToWebview>) => {
   const msg = e.data;
-  if (msg.type === "load") loadGlb(msg.uri);
+  if (msg.type === "load") {
+    loadGlb(msg.uri);
+  } else if (msg.type === "enrich") {
+    cellSizeMetres = msg.enrichment?.cellSize ?? DEFAULT_CELL_SIZE_METRES;
+    rebuildGrid();
+    renderInfo(msg.enrichment);
+  }
 });
 
 send({ type: "ready", version: PROTOCOL_VERSION });

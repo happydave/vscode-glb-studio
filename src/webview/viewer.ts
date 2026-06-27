@@ -161,6 +161,13 @@ let selectedMaterial: THREE.MeshStandardMaterial | null = null;
 const rowByObject = new Map<THREE.Object3D, HTMLElement>();
 const raycaster = new THREE.Raycaster();
 let gizmoDragged = false;
+// Hover-preview state (WI 676).
+let hoverHelper: THREE.BoxHelper | null = null;
+let hoveredObject: THREE.Object3D | null = null;
+let isPointerDown = false;
+let hoverPending = false;
+let hoverX = 0;
+let hoverY = 0;
 
 /** Rebuild the ground grid so each cell is `cellSizeMetres` across the model span. */
 function rebuildGrid(): void {
@@ -189,6 +196,7 @@ function tick(): void {
   const dt = clock.getDelta();
   if (mixer) mixer.update(dt);
   if (highlight) highlight.update();
+  if (hoverHelper) hoverHelper.update();
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
@@ -465,8 +473,11 @@ let pickDownY = 0;
 renderer.domElement.addEventListener("pointerdown", (e) => {
   pickDownX = e.clientX;
   pickDownY = e.clientY;
+  isPointerDown = true;
+  clearHover(); // no hover preview during a drag
 });
 renderer.domElement.addEventListener("pointerup", (e) => {
+  isPointerDown = false;
   if (e.button !== 0) return; // left-click only
   if (gizmoDragged) {
     gizmoDragged = false; // this release ended a gizmo drag — not a select
@@ -475,6 +486,53 @@ renderer.domElement.addEventListener("pointerup", (e) => {
   if (Math.hypot(e.clientX - pickDownX, e.clientY - pickDownY) > 5) return; // orbit drag
   pickAt(e.clientX, e.clientY);
 });
+
+// Hover preview: outline the component under the cursor (distinct from selection).
+function clearHover(): void {
+  if (hoverHelper) {
+    scene.remove(hoverHelper);
+    hoverHelper.geometry.dispose();
+    (hoverHelper.material as THREE.Material).dispose();
+    hoverHelper = null;
+  }
+  hoveredObject = null;
+  renderer.domElement.style.cursor = "default";
+}
+
+function updateHover(): void {
+  if (!currentModel || isPointerDown) {
+    clearHover();
+    return;
+  }
+  const node = pickNode(hoverX, hoverY);
+  if (!node || node === selectedObject) {
+    clearHover();
+    return;
+  }
+  if (node !== hoveredObject) {
+    if (hoverHelper) {
+      scene.remove(hoverHelper);
+      hoverHelper.geometry.dispose();
+      (hoverHelper.material as THREE.Material).dispose();
+    }
+    hoveredObject = node;
+    hoverHelper = new THREE.BoxHelper(node, 0x66ccff);
+    scene.add(hoverHelper);
+  }
+  renderer.domElement.style.cursor = "pointer";
+}
+
+renderer.domElement.addEventListener("pointermove", (e) => {
+  hoverX = e.clientX;
+  hoverY = e.clientY;
+  if (hoverPending) return;
+  hoverPending = true;
+  requestAnimationFrame(() => {
+    hoverPending = false;
+    updateHover();
+  });
+});
+renderer.domElement.addEventListener("pointerleave", clearHover);
 
 function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
   if (selectedRow) selectedRow.classList.remove("sel");
@@ -648,6 +706,7 @@ function resetGizmo(): void {
   inspectorEl.hidden = true;
   nodeByIndex.clear();
   indexByObject.clear();
+  clearHover();
 }
 
 /** On gesture end, send one committed transform intent for the selected node. */

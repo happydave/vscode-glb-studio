@@ -296,24 +296,35 @@ function texturesOf(mat: THREE.Material): THREE.Texture[] {
 
 // --- Camera framing ------------------------------------------------------------
 
-function frameObject(obj: THREE.Object3D): void {
-  const box = new THREE.Box3().setFromObject(obj);
+/** Position the camera to frame a bounding box (instant). */
+function frameToBox(box: THREE.Box3): void {
   if (box.isEmpty()) return;
   const size = new THREE.Vector3();
   const center = new THREE.Vector3();
   box.getSize(size);
   box.getCenter(center);
-
   const radius = Math.max(size.x, size.y, size.z, 0.001) * 0.5;
   const fov = (camera.fov * Math.PI) / 180;
   const distance = (radius / Math.sin(fov / 2)) * 1.4;
-
   controls.target.copy(center);
-  camera.position.copy(center).add(new THREE.Vector3(1, 0.8, 1).normalize().multiplyScalar(distance));
+  camera.position
+    .copy(center)
+    .add(new THREE.Vector3(1, 0.8, 1).normalize().multiplyScalar(distance));
   camera.near = Math.max(distance / 100, 0.001);
   camera.far = distance * 100;
   camera.updateProjectionMatrix();
   controls.update();
+}
+
+function frameObject(obj: THREE.Object3D): void {
+  const box = new THREE.Box3().setFromObject(obj);
+  if (box.isEmpty()) return;
+  frameToBox(box);
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+  const radius = Math.max(size.x, size.y, size.z, 0.001) * 0.5;
 
   // Size the overlay to the model so it stays a useful reference.
   pivot.scale.setScalar(Math.max(radius * 0.03, 0.0005));
@@ -406,29 +417,48 @@ function deselect(): void {
   inspectorEl.hidden = true;
 }
 
-/** Raycast a viewport click into the model and select the picked node. */
-function pickAt(clientX: number, clientY: number): void {
-  if (!currentModel) return;
+function ndcFromClient(clientX: number, clientY: number): THREE.Vector2 {
   const rect = renderer.domElement.getBoundingClientRect();
-  const ndc = new THREE.Vector2(
+  return new THREE.Vector2(
     ((clientX - rect.left) / rect.width) * 2 - 1,
     -((clientY - rect.top) / rect.height) * 2 + 1
   );
-  raycaster.setFromCamera(ndc, camera);
+}
+
+/** Raycast the cursor into the model; return the nearest node with a tree row, or null. */
+function pickNode(clientX: number, clientY: number): THREE.Object3D | null {
+  if (!currentModel) return null;
+  raycaster.setFromCamera(ndcFromClient(clientX, clientY), camera);
   const hits = raycaster.intersectObject(currentModel, true);
-  if (hits.length === 0) {
-    deselect();
-    return;
-  }
-  // Resolve the hit mesh to the nearest object that has a tree row (a selectable node).
+  if (hits.length === 0) return null;
   let obj: THREE.Object3D | null = hits[0].object;
   while (obj && !rowByObject.has(obj)) obj = obj.parent;
-  if (obj) {
-    const row = rowByObject.get(obj) as HTMLElement;
-    selectNode(obj, row);
-    row.scrollIntoView({ block: "nearest" });
-  }
+  return obj;
 }
+
+/** Raycast a viewport click into the model and select the picked node. */
+function pickAt(clientX: number, clientY: number): void {
+  const node = pickNode(clientX, clientY);
+  if (!node) {
+    if (currentModel) deselect(); // clicked empty space within a loaded model
+    return;
+  }
+  const row = rowByObject.get(node) as HTMLElement;
+  selectNode(node, row);
+  row.scrollIntoView({ block: "nearest" });
+}
+
+// Double-click frames the picked component (or the whole model over empty space).
+renderer.domElement.addEventListener("dblclick", (e) => {
+  const node = pickNode(e.clientX, e.clientY);
+  if (node) {
+    frameToBox(new THREE.Box3().setFromObject(node));
+    const row = rowByObject.get(node);
+    if (row) selectNode(node, row);
+  } else if (currentModel) {
+    frameToBox(new THREE.Box3().setFromObject(currentModel));
+  }
+});
 
 let pickDownX = 0;
 let pickDownY = 0;

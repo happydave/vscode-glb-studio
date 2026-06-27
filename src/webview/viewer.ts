@@ -150,8 +150,10 @@ const clock = new THREE.Clock();
 let mixer: THREE.AnimationMixer | null = null;
 let action: THREE.AnimationAction | null = null;
 let clips: THREE.AnimationClip[] = [];
-let highlight: THREE.BoxHelper | null = null;
-let selectedRow: HTMLElement | null = null;
+// Multi-select (WI 678): a selection set + per-node highlights; `selectedObject` is the
+// primary (last-clicked) node that the gizmo/inspector bind to.
+const selection = new Set<THREE.Object3D>();
+const highlights = new Map<THREE.Object3D, THREE.BoxHelper>();
 
 // glTF node-index <-> three object mapping (shared identity with the host).
 const nodeByIndex = new Map<number, THREE.Object3D>();
@@ -195,7 +197,7 @@ resize();
 function tick(): void {
   const dt = clock.getDelta();
   if (mixer) mixer.update(dt);
-  if (highlight) highlight.update();
+  highlights.forEach((h) => h.update());
   if (hoverHelper) hoverHelper.update();
   controls.update();
   renderer.render(scene, camera);
@@ -216,7 +218,7 @@ function loadGlb(url: string): void {
       const stats = computeStats(currentModel);
       frameObject(currentModel);
       renderStats(stats);
-      clearHighlight();
+      clearSelection();
       resetGizmo();
       void populateNodeMaps(gltf);
       buildTree(currentModel);
@@ -405,7 +407,7 @@ function buildTree(root: THREE.Object3D): void {
     const row = document.createElement("div");
     row.className = "node";
     row.textContent = `${"  ".repeat(depth)}${obj.name || obj.type}`;
-    row.addEventListener("click", () => selectNode(obj, row));
+    row.addEventListener("click", (e) => selectNode(obj, row, e.shiftKey));
     treeEl.appendChild(row);
     rowByObject.set(obj, row);
     for (const child of obj.children) addRow(child, depth + 1);
@@ -415,14 +417,10 @@ function buildTree(root: THREE.Object3D): void {
   treeEl.hidden = false;
 }
 
-/** Clear the current selection (highlight, gizmo, inspector). */
+/** Clear the entire selection (highlights, gizmo, inspector). */
 function deselect(): void {
-  clearHighlight();
-  gizmo.detach();
-  selectedObject = null;
-  selectedMaterial = null;
-  gizmoEl.hidden = true;
-  inspectorEl.hidden = true;
+  clearSelection();
+  bindPrimary();
 }
 
 function ndcFromClient(clientX: number, clientY: number): THREE.Vector2 {
@@ -445,14 +443,14 @@ function pickNode(clientX: number, clientY: number): THREE.Object3D | null {
 }
 
 /** Raycast a viewport click into the model and select the picked node. */
-function pickAt(clientX: number, clientY: number): void {
+function pickAt(clientX: number, clientY: number, additive = false): void {
   const node = pickNode(clientX, clientY);
   if (!node) {
     if (currentModel) deselect(); // clicked empty space within a loaded model
     return;
   }
   const row = rowByObject.get(node) as HTMLElement;
-  selectNode(node, row);
+  selectNode(node, row, additive);
   row.scrollIntoView({ block: "nearest" });
 }
 
@@ -484,7 +482,7 @@ renderer.domElement.addEventListener("pointerup", (e) => {
     return;
   }
   if (Math.hypot(e.clientX - pickDownX, e.clientY - pickDownY) > 5) return; // orbit drag
-  pickAt(e.clientX, e.clientY);
+  pickAt(e.clientX, e.clientY, e.shiftKey);
 });
 
 // Hover preview: outline the component under the cursor (distinct from selection).
@@ -505,7 +503,7 @@ function updateHover(): void {
     return;
   }
   const node = pickNode(hoverX, hoverY);
-  if (!node || node === selectedObject) {
+  if (!node || selection.has(node)) {
     clearHover();
     return;
   }
@@ -534,17 +532,36 @@ renderer.domElement.addEventListener("pointermove", (e) => {
 });
 renderer.domElement.addEventListener("pointerleave", clearHover);
 
-function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
-  if (selectedRow) selectedRow.classList.remove("sel");
-  selectedRow = row;
-  row.classList.add("sel");
-  clearHighlight(true);
-  highlight = new THREE.BoxHelper(obj, 0xffcc00);
-  scene.add(highlight);
+function selectNode(
+  obj: THREE.Object3D,
+  row: HTMLElement,
+  additive = false
+): void {
+  if (additive && selection.has(obj)) {
+    // Toggle the node out of the selection.
+    selection.delete(obj);
+    removeHighlight(obj);
+    row.classList.remove("sel");
+    if (obj === selectedObject) {
+      const rest = [...selection];
+      selectedObject = rest.length ? rest[rest.length - 1] : null;
+    }
+  } else {
+    if (!additive) clearSelection();
+    selection.add(obj);
+    addHighlight(obj);
+    row.classList.add("sel");
+    selectedObject = obj; // primary = last clicked
+  }
+  refreshHighlightColors();
+  bindPrimary();
+}
 
-  selectedObject = obj;
-  const idx = indexByObject.get(obj);
-  if (idx !== undefined) {
+/** Bind the gizmo + inspector + material readout to the primary (last-clicked) node. */
+function bindPrimary(): void {
+  const obj = selectedObject;
+  const idx = obj ? indexByObject.get(obj) : undefined;
+  if (obj && idx !== undefined) {
     gizmo.attach(obj);
     gizmoEl.hidden = false;
     inspectorEl.hidden = false;
@@ -559,7 +576,7 @@ function selectNode(obj: THREE.Object3D, row: HTMLElement): void {
     extrasErr.textContent = "";
     renderMaterialInfo(selectedMaterial);
   } else {
-    // Not a glTF node (e.g. the Scene root) — selectable/highlightable, not editable.
+    // No primary, or the primary isn't an editable glTF node (e.g. the Scene root).
     gizmo.detach();
     gizmoEl.hidden = true;
     inspectorEl.hidden = true;
@@ -614,17 +631,41 @@ function materialUserCount(mat: THREE.Material): number {
   return n;
 }
 
-function clearHighlight(keepRow = false): void {
-  if (highlight) {
-    scene.remove(highlight);
-    highlight.geometry.dispose();
-    (highlight.material as THREE.Material).dispose();
-    highlight = null;
-  }
-  if (!keepRow && selectedRow) {
-    selectedRow.classList.remove("sel");
-    selectedRow = null;
-  }
+function addHighlight(obj: THREE.Object3D): void {
+  const helper = new THREE.BoxHelper(obj, 0xffcc00);
+  highlights.set(obj, helper);
+  scene.add(helper);
+}
+
+function removeHighlight(obj: THREE.Object3D): void {
+  const helper = highlights.get(obj);
+  if (!helper) return;
+  scene.remove(helper);
+  helper.geometry.dispose();
+  (helper.material as THREE.Material).dispose();
+  highlights.delete(obj);
+}
+
+/** Primary highlight bright, the rest dimmer, so the active node is identifiable. */
+function refreshHighlightColors(): void {
+  highlights.forEach((helper, obj) => {
+    (helper.material as THREE.LineBasicMaterial).color.setHex(
+      obj === selectedObject ? 0xffcc00 : 0x9c7a00
+    );
+  });
+}
+
+function clearSelection(): void {
+  highlights.forEach((helper) => {
+    scene.remove(helper);
+    helper.geometry.dispose();
+    (helper.material as THREE.Material).dispose();
+  });
+  highlights.clear();
+  selection.forEach((obj) => rowByObject.get(obj)?.classList.remove("sel"));
+  selection.clear();
+  selectedObject = null;
+  selectedMaterial = null;
 }
 
 // --- Animation -----------------------------------------------------------------
@@ -741,7 +782,7 @@ function applyTransform(edit: TransformEdit): void {
   );
   obj.scale.set(edit.scale[0], edit.scale[1], edit.scale[2]);
   obj.updateMatrixWorld(true);
-  if (highlight) highlight.update();
+  highlights.forEach((h) => h.update());
 }
 
 gizmoEl.querySelectorAll("button").forEach((btn) => {

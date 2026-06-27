@@ -488,9 +488,10 @@ function renderMaterialInfo(mat: THREE.MeshStandardMaterial | null): void {
   }
   const c = mat.color;
   const hex = "#" + c.getHexString(THREE.SRGBColorSpace);
+  const colorDriven = mat.map ? "  (texture-driven)" : "";
   const lines = [
     `material: ${mat.name || "(unnamed)"}`,
-    `base color: ${hex}  rgba(${c.r.toFixed(2)}, ${c.g.toFixed(2)}, ${c.b.toFixed(2)}, ${mat.opacity.toFixed(2)})`,
+    `base color: ${hex}  rgba(${c.r.toFixed(2)}, ${c.g.toFixed(2)}, ${c.b.toFixed(2)}, ${mat.opacity.toFixed(2)})${colorDriven}`,
     `metal: ${mat.metalness.toFixed(2)}   rough: ${mat.roughness.toFixed(2)}`,
   ];
   const seen = new Set<THREE.Texture>();
